@@ -310,7 +310,7 @@ Solidity (Shanghai EVM, no Cancun opcodes), Foundry, Next.js + TypeScript, wagmi
 
 ### Live demo + video
 
-- **Live demo:** https://aevum-invoice-escrow-2syak9gbh-ipan12.vercel.app
+- **Live demo:** https://aevum-invoice-escrow-ipan12.vercel.app
 - **Demo video:** `demo-video-aevum.mp4` in the repo root (2:41, narrated walkthrough of the live demo + on-chain evidence).
 
 ### Contracts on Aevum testnet (chain `44005`)
