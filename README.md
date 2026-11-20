@@ -285,12 +285,74 @@ pnpm example read-payments    # every Paid event, 1,000 blocks at a time
 
 ## Submitting your project
 
-Make it easy for judges to check your on-chain activity:
+### The problem
 
-- Contract addresses on Aevum testnet (`44005`), with explorer links — both `Checkout` and `InvoiceEscrow`.
-- A link to the exact commit you deployed.
-- A few transaction hashes that show your app working (an invoice created, funded, and released — the invoice detail page and the dashboard show them).
-- A short demo video or a live URL.
+Freelancers in Indonesia (and anywhere without easy access to international banking) struggle to get paid across borders without a bank account — and clients who pay upfront have no guarantee the work will be delivered. This project is an **invoice + milestone escrow in tUSD8 on QDay Aevum testnet**: the client locks payment in escrow, the freelancer sees the money is already there, and funds move only when the client approves the milestone — or automatically when the deadline passes with no dispute. If something goes wrong, either side raises a dispute and a named arbiter (or the client, when no arbiter was named) resolves it: release or refund. The client needs no gas and no tQDAY: funding can be gasless with a single EIP-3009 signature.
+
+### Architecture
+
+- `contracts/src/InvoiceEscrow.sol` — the escrow core (**new code written for this entry**): create / fund / approve / release / dispute / renew. No owner, no admin, no upgradeability. Funding must match the invoice amount exactly; the EIP-3009 nonce is bound to the invoice (`keccak256(escrow, invoiceId)`), so a signature cannot be replayed for another invoice. Recurring invoices renew into a new invoice with the same terms.
+- `contracts/src/Checkout.sol` — the kit's example pay-per-order flow, kept as the simple checkout path.
+- `web/` (Next.js + TypeScript) — invoice UI, dashboard, activity feed, receipts. Every chain read and write goes through `@aevum-kit/aevum` (see below).
+- `web/src/app/api/relay/route.ts` — gasless relayer: it reads the invoice from the chain, checks status (`Created`), client and amount, simulates, then submits `fundInvoiceWithAuthorization` and pays the gas. A signature for a different amount or invoice fails simulation and costs nothing.
+- `packages/aevum/` (`@aevum-kit/aevum`) — the Aevum integration library shipped with the official starter kit (see [Aevum integration](#aevum-integration)).
+
+### Workflow (what a judge can click through)
+
+1. Freelancer creates an invoice (amount, due date, auto-release date, optional arbiter).
+2. Client funds it — directly, or gasless by signing once (the relayer submits and pays gas).
+3. Freelancer delivers the work.
+4. Client approves the milestone → funds released to the freelancer. Or: the auto-release date passes with no dispute → anyone can release. Or: either side disputes → the arbiter resolves (release or refund).
+
+### Tech stack
+
+Solidity (Shanghai EVM, no Cancun opcodes), Foundry, Next.js + TypeScript, wagmi / viem / RainbowKit, tUSD8 (EIP-2612 + EIP-3009, 6 decimals), Vercel hosting.
+
+### Live demo + video
+
+- **Live demo:** https://aevum-invoice-escrow-2syak9gbh-ipan12.vercel.app
+- **Demo video:** `demo-video-aevum.mp4` in the repo root (2:41, narrated walkthrough of the live demo + on-chain evidence).
+
+### Contracts on Aevum testnet (chain `44005`)
+
+Explorer: https://explorer-test.qday.info
+
+| Contract | Address | Deploy tx | Block |
+|---|---|---|---|
+| `InvoiceEscrow` | `0x0a8401Acdf5c13c5255763D38472Fb9F9303E2d8` | `0x060f93de02cb62d9d53f5048b203947b45387aaafba0cd095b78586cf24f1a7a` | 3643492 |
+| `Checkout` | `0x80B416d32fD4A70161eeE887ac9bDAD43D93849b` | `0x769cf98b08a102272215140fe8c6b76ba0de5a1aa8d7945ed24be686c2dc7cc8` | 3643491 |
+
+### Verified end-to-end run (20 Nov 2026, live testnet)
+
+Invoice `0xf16726821b2f51134b3788e7caf9585d63fc14dd9cd3c381356c621de8048d4b`, freelancer `0x550BC7715640cB36fB5E3F1A81f294399d025595`, amount **1 tUSD8**. All receipts `status 0x1` (verified against the Aevum RPC):
+
+| Step | Transaction | Block |
+|---|---|---|
+| Create invoice | `0x744e8fee7325f9a00ef98d5b33ff4c00987b328de80327482857f6191e43a239` | 3649313 |
+| Gasless fund (via live `/api/relay`) | `0x133382c2739e20918c08fa1fb48bb1d656b9b964f928a120332d2aaaea2a2ef4` | 3649502 |
+| Approve milestone → Released, freelancer received 1 tUSD8 | `0xd5da9e8db215a06b0523be1ea5462f70c1f2805860527b0063e95a4d76dcd577` | 3649517 |
+| Checkout order `0xa0daef835f7816d4f9d5cb0fa4f279c4ea9a04cf837cc0b6448feee6aa8b2d37`, gasless pay → `isPaid = true` | `0x02fe7019117705ff5ef60ab82a2e3ce4b089557975f8055387f06b73c103aa19` | 3649534 |
+
+Machine-readable evidence: [`docs/e2e-2026-11-20.json`](docs/e2e-2026-11-20.json).
+
+The deployed bytecode was verified against this repo: a fresh `forge build` produces identical runtime code for both contracts (same length, same metadata hash; the only differing bytes are the immutable constructor addresses — tUSD8 and the relayer wallet). The deployed code **is** the code in this repo.
+
+### Aevum integration
+
+The app integrates the Aevum integration library shipped with the **official Aevum Starter Kit**: [`@aevum-kit/aevum`](packages/aevum) (workspace package, MIT). It is the kit's own Aevum layer, and every on-chain interaction in this app goes through it:
+
+- **Chain config** (`src/chain.ts`): `aevumTestnet` (chain `44005`, RPC `https://rpc-test.qday.info`, explorer `https://explorer-test.qday.info`, multicall3), plus the local anvil/fork chains and `MAX_LOG_RANGE = 1000` (Aevum's `eth_getLogs` limit).
+- **Contract ABIs** (`src/contracts.ts`): tUSD8 address + ERC-20 ABI, EIP-3009 ABI, `checkoutAbi`, `invoiceEscrowAbi` — used by the invoice pages, dashboard, activity feed, receipts, checkout, and the relayer (12 files under `web/src` import from the package).
+- **EIP-3009 helpers** (`src/eip3009.ts`): `checkoutTypedData` builds the EIP-712 message the client signs for gasless payment.
+- **Chunked log reader** (`src/logs.ts`): `getLogsChunked` splits `eth_getLogs` into ≤1,000-block requests — required on Aevum, where a wider range fails.
+
+**Honest note for judges:** the package is not branded "SDK" anywhere in the kit — it is the starter kit's official shared Aevum library, and it is the integration surface QDay ships for this challenge; no separately published "Aevum SDK" package exists in the kit. The other named path, a QDay agent via the ERC-8004 registry, is **not open for this challenge** (the registry is still in internal testing — see the in-app Docs page). No integration was faked: everything listed above is imported and executed by the running app, and the on-chain evidence above proves it. If the judges want a different integration surface, please ask in the QDay Discord Q/A — the team can add it before the deadline.
+
+### Before you submit
+
+- **Commit first.** At the time of writing, the working tree has uncommitted changes (including `contracts/src/InvoiceEscrow.sol` and the invoice UI, which are new files). The deployed contracts match this exact tree, so commit it and push to `https://github.com/Ipan8/aevum-invoice-escrow` — the resulting commit is the "exact commit deployed". Do not submit with a dirty tree.
+- Pushing to `main` redeploys the Vercel demo automatically, so the live demo will then show the new "Aevum Invoice Escrow" title.
+- Submit on DoraHacks before **11 Dec 2026, 15:00 WIB** with the repo link, the live demo URL, and the demo video.
 
 Read the official rules on the DoraHacks challenge page. They win over anything here.
 
